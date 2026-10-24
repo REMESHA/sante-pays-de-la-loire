@@ -6,8 +6,8 @@ Ce projet personnel reproduit une chaîne complète d'observation de la santé, 
 
 **fichiers Insee et DREES (Excel) → import et contrôles sous R → base SQLite → indicateurs calculés en SQL → rapport Quarto automatisé + application Shiny interactive**
 
-- 📄 **Rapport** : [lien GitHub Pages à ajouter]
-- 📊 **Application Shiny** : [lien shinyapps.io à ajouter]
+- 📄 **Rapport** : https://github.com/REMESHA/sante-pays-de-la-loire/
+- 📊 **Application Shiny** : https://remesha.shinyapps.io/sante-pays-de-la-loire/
 
 ## Contenu
 
