@@ -1,0 +1,458 @@
+---
+title: "Santé et démographie dans les Pays de la Loire"
+subtitle: "Indicateurs départementaux d'espérance de vie, de mortalité, de vieillissement et d'accès aux médecins généralistes"
+author: "Guy Darcy Remesha"
+date: today
+date-format: "D MMMM YYYY"
+lang: fr
+format:
+  html:
+    toc: true
+    toc-title: "Sommaire"
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Voir le code"
+    embed-resources: true
+    theme: cosmo
+    fig-width: 8
+    fig-height: 5
+    fig-dpi: 120
+crossref:
+  fig-title: "Figure"
+  tbl-title: "Tableau"
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+source("../R/fonctions.R")
+library(tidyr)
+library(knitr)
+
+annee_ref   <- 2024   # dernière année complète pour tous les indicateurs
+annee_debut <- 2010
+
+fmt  <- function(x, d = 1) formatC(x, format = "f", digits = d, decimal.mark = ",")
+fmtn <- function(x) format(round(x), big.mark = " ", scientific = FALSE)
+```
+
+::: {.callout-note}
+## À propos de ce document
+
+Ce rapport est un projet personnel, réalisé à partir de **données publiques de l'Insee et de la DREES**. Il illustre une chaîne de production complète et reproductible : import des fichiers sources, stockage dans une base **SQLite**, calcul des indicateurs en **SQL**, puis restitution automatisée en **Quarto** (tableaux, graphiques, cartes). Une application **Shiny** permet d'explorer les mêmes données de façon interactive. Le code est disponible sur GitHub.
+:::
+
+# Les Pays de la Loire en chiffres clés
+
+```{r}
+#| label: synthese
+synthese <- requete("01_tableau_synthese.sql", annee = annee_ref)
+region   <- filter(synthese, code == "52")
+france   <- filter(synthese, code == "FR")
+deps     <- filter(synthese, niveau == "departement")
+```
+
+Au 1^er^ janvier `r annee_ref`, les Pays de la Loire comptent **`r fmtn(region$pop_total)` habitants**. L'espérance de vie à la naissance y atteint **`r fmt(region$esp_vie_femmes)` ans pour les femmes** et **`r fmt(region$esp_vie_hommes)` ans pour les hommes**, contre respectivement `r fmt(france$esp_vie_femmes)` et `r fmt(france$esp_vie_hommes)` ans en France.
+
+```{r}
+#| label: tbl-synthese
+#| tbl-cap: !expr paste0("Principaux indicateurs en ", annee_ref)
+synthese |>
+  transmute(
+    Territoire = libelle,
+    Population = fmtn(pop_total),
+    `Part des 75 ans ou plus (%)` = fmt(part_75_plus_pct),
+    `Taux brut de mortalité (‰)` = fmt(taux_mortalite_pm),
+    `Espérance de vie femmes (ans)` = fmt(esp_vie_femmes),
+    `Rang national femmes` = ifelse(is.na(rang_ev_femmes), "",
+                                    paste0(rang_ev_femmes, "/", nb_departements)),
+    `Espérance de vie hommes (ans)` = fmt(esp_vie_hommes),
+    `Rang national hommes` = ifelse(is.na(rang_ev_hommes), "",
+                                    paste0(rang_ev_hommes, "/", nb_departements))
+  ) |>
+  kable(align = "lrrrrrrr")
+```
+
+*Lecture : le rang national classe les départements français de l'espérance de vie la plus élevée (rang 1) à la plus faible.*
+
+# Espérance de vie à la naissance
+
+## Écarts entre départements
+
+```{r}
+#| label: fig-carte-ev
+#| fig-cap: !expr paste0("Espérance de vie à la naissance par département en ", annee_ref, " (étiquettes, en années) et écart à la valeur nationale (couleurs)")
+#| fig-height: 4.5
+carte <- requete("05_carte_departements.sql", annee = annee_ref)
+
+fond <- fond_departements() |>
+  filter(code_dep %in% departements_pdl) |>
+  left_join(carte, by = "code_dep")
+
+fond_long <- fond |>
+  select(nom_dep, esp_vie_femmes, esp_vie_hommes) |>
+  pivot_longer(c(esp_vie_femmes, esp_vie_hommes),
+               names_to = "sexe", values_to = "ev") |>
+  mutate(sexe = ifelse(sexe == "esp_vie_femmes", "Femmes", "Hommes"),
+         ref_france = ifelse(sexe == "Femmes", france$esp_vie_femmes,
+                             france$esp_vie_hommes),
+         ecart = ev - ref_france)
+
+etiquettes <- fond_long |>
+  mutate(pt = st_point_on_surface(geometry)) |>
+  mutate(x = st_coordinates(pt)[, 1], y = st_coordinates(pt)[, 2])
+
+ggplot(fond_long) +
+  geom_sf(aes(fill = ecart), colour = "white", linewidth = 0.6) +
+  geom_label(data = st_drop_geometry(etiquettes),
+             aes(x, y, label = paste0(nom_dep, "\n", fmt(ev))),
+             size = 2.6, label.size = 0, alpha = 0.8, lineheight = 0.9) +
+  facet_wrap(~ sexe) +
+  scale_fill_gradient2(low = "#d6604d", mid = "#f7f7f7", high = "#2166ac",
+                       midpoint = 0, name = "Écart à la\nFrance (ans)",
+                       labels = function(x) fmt(x, 1)) +
+  labs(caption = source_insee) +
+  theme_ors() +
+  theme(axis.text = element_blank(), axis.title = element_blank(),
+        panel.grid = element_blank(), legend.position = "right")
+```
+
+```{r}
+#| label: ecarts-ev
+ev_f <- arrange(deps, desc(esp_vie_femmes))
+ev_h <- arrange(deps, desc(esp_vie_hommes))
+```
+
+En `r annee_ref`, l'espérance de vie des femmes varie de `r fmt(min(deps$esp_vie_femmes))` ans (`r ev_f$libelle[nrow(ev_f)]`) à `r fmt(max(deps$esp_vie_femmes))` ans (`r ev_f$libelle[1]`), soit un écart de `r fmt(max(deps$esp_vie_femmes) - min(deps$esp_vie_femmes))` an. Chez les hommes, elle varie de `r fmt(min(deps$esp_vie_hommes))` ans (`r ev_h$libelle[nrow(ev_h)]`) à `r fmt(max(deps$esp_vie_hommes))` ans (`r ev_h$libelle[1]`). L'écart entre femmes et hommes atteint `r fmt(region$esp_vie_femmes - region$esp_vie_hommes)` ans à l'échelle régionale.
+
+## Évolution depuis `r annee_debut`
+
+```{r}
+#| label: fig-evolution-ev
+#| fig-cap: !expr paste0("Évolution de l'espérance de vie à la naissance depuis ", annee_debut)
+#| fig-height: 5.5
+evol <- requete("02_evolution_esperance_vie.sql", annee_debut = annee_debut) |>
+  filter(annee <= annee_ref)
+
+ggplot(evol, aes(annee, esperance_vie, colour = libelle,
+                 linewidth = niveau != "departement")) +
+  annotate("rect", xmin = 2019.5, xmax = 2022.5, ymin = -Inf, ymax = Inf,
+           fill = "grey92") +
+  annotate("text", x = 2021, y = Inf, label = "Covid-19", vjust = 1.5,
+           size = 3, colour = "grey40") +
+  geom_line() +
+  facet_wrap(~ sexe, scales = "free_y") +
+  scale_colour_manual(values = couleurs_territoires, name = NULL) +
+  scale_linewidth_manual(values = c(`FALSE` = 0.5, `TRUE` = 1.2), guide = "none") +
+  scale_x_continuous(breaks = seq(annee_debut, annee_ref, 2)) +
+  labs(x = NULL, y = "Espérance de vie (années)", caption = source_insee) +
+  theme_ors() +
+  guides(colour = guide_legend(nrow = 2))
+```
+
+```{r}
+#| label: covid
+reg_ev <- filter(evol, code == "52")
+v <- function(a, s) reg_ev$esperance_vie[reg_ev$annee == a & reg_ev$sexe == s]
+```
+
+Les courbes font apparaître le recul lié à l'épidémie de Covid-19 (2020-2022), puis une reprise. Dans la région, l'espérance de vie des femmes passe de `r fmt(v(2019, "Femmes"))` ans en 2019 à `r fmt(v(annee_ref, "Femmes"))` ans en `r annee_ref`, et celle des hommes de `r fmt(v(2019, "Hommes"))` à `r fmt(v(annee_ref, "Hommes"))` ans. À l'échelle d'un département, l'espérance de vie annuelle reste sensible aux fluctuations aléatoires du nombre de décès : les écarts de quelques dixièmes d'année entre deux départements, ou d'une année sur l'autre, doivent être interprétés avec prudence.
+
+# Vieillissement et mortalité : attention au taux brut
+
+```{r}
+#| label: fig-vieillissement
+#| fig-cap: !expr paste0("Part des 75 ans ou plus et taux brut de mortalité, départements de France métropolitaine, ", annee_ref)
+#| fig-height: 5.5
+vm <- requete("04_vieillissement_mortalite.sql", annee = annee_ref)
+correl <- cor(vm$part_75_plus_pct, vm$taux_mortalite_pm)
+
+ggplot(vm, aes(part_75_plus_pct, taux_mortalite_pm)) +
+  geom_smooth(method = "lm", se = FALSE, colour = "grey70", linewidth = 0.6) +
+  geom_point(data = filter(vm, groupe == "Autres départements"),
+             colour = "grey65", size = 1.8) +
+  geom_point(data = filter(vm, groupe == "Pays de la Loire"),
+             colour = "#1F3A5F", size = 3) +
+  ggrepel::geom_label_repel(data = filter(vm, groupe == "Pays de la Loire"),
+            aes(label = libelle), colour = "#1F3A5F", size = 3.2,
+            fontface = "bold", label.size = 0, fill = alpha("white", 0.85),
+            min.segment.length = 0, box.padding = 0.6, seed = 1) +
+  labs(x = "Part des 75 ans ou plus dans la population (%)",
+       y = "Taux brut de mortalité (pour 1 000 habitants)",
+       caption = source_insee) +
+  theme_ors()
+```
+
+```{r}
+#| label: chiffres-vieillissement
+pdl_vm <- filter(vm, groupe == "Pays de la Loire") |> arrange(taux_mortalite_pm)
+```
+
+Le taux brut de mortalité dépend d'abord de la structure par âge : sur l'ensemble des départements métropolitains, il est très fortement corrélé à la part des 75 ans ou plus (r = `r fmt(correl, 2)`). En `r annee_ref`, il varie dans la région de `r fmt(pdl_vm$taux_mortalite_pm[1])` ‰ en `r pdl_vm$libelle[1]` à `r fmt(pdl_vm$taux_mortalite_pm[nrow(pdl_vm)])` ‰ en `r pdl_vm$libelle[nrow(pdl_vm)]`. Cet écart traduit surtout des populations d'âges différents, pas un état de santé différent.
+
+::: {.callout-important}
+## Point de méthode
+
+Pour comparer la mortalité entre territoires, il faut utiliser un **taux standardisé sur l'âge** (méthode directe, population de référence commune) ou un **indice comparatif de mortalité** (méthode indirecte). Ces calculs demandent les décès par âge et par département, non inclus dans les fichiers utilisés ici. L'espérance de vie, elle, ne dépend pas de la structure par âge : c'est l'indicateur de synthèse le plus adapté pour comparer les départements.
+:::
+
+# Mortalité infantile
+
+```{r}
+#| label: mi
+mi <- requete("03_mortalite_infantile_triennale.sql", annee_debut = annee_debut)
+
+# Intervalle de confiance exact à 95 % (loi de Poisson sur le nombre de décès)
+ic <- function(d, n, borne) {
+  sapply(seq_along(d), function(i) {
+    ci <- poisson.test(d[i])$conf.int
+    1000 * ci[borne] / n[i]
+  })
+}
+mi <- mi |>
+  mutate(ic_bas  = ic(deces_3ans, naissances_3ans, 1),
+         ic_haut = ic(deces_3ans, naissances_3ans, 2))
+
+derniere <- filter(mi, annee_fin == max(annee_fin))
+```
+
+```{r}
+#| label: fig-mi
+#| fig-cap: !expr paste0("Taux de mortalité infantile sur la période ", derniere$periode[1], ", avec intervalle de confiance à 95 %")
+#| fig-height: 4.5
+derniere |>
+  mutate(libelle = reorder(libelle, taux_pour_1000),
+         repere = niveau != "departement") |>
+  ggplot(aes(taux_pour_1000, libelle, colour = repere)) +
+  geom_errorbarh(aes(xmin = ic_bas, xmax = ic_haut), height = 0.25) +
+  geom_point(size = 3) +
+  geom_text(aes(label = fmt(taux_pour_1000, 1)), vjust = -1, size = 3.2,
+            show.legend = FALSE) +
+  scale_colour_manual(values = c(`FALSE` = "#3182bd", `TRUE` = "#1F3A5F"),
+                      guide = "none") +
+  labs(x = "Décès avant 1 an pour 1 000 naissances vivantes", y = NULL,
+       caption = source_insee) +
+  theme_ors()
+```
+
+```{r}
+#| label: tbl-mi
+#| tbl-cap: "Effectifs et taux de mortalité infantile, dernière période de 3 ans"
+derniere |>
+  transmute(Territoire = libelle, `Période` = periode,
+            `Décès avant 1 an` = fmtn(deces_3ans),
+            `Naissances vivantes` = fmtn(naissances_3ans),
+            `Taux (‰)` = fmt(taux_pour_1000, 2),
+            `IC à 95 %` = paste0("[", fmt(ic_bas, 2), " ; ", fmt(ic_haut, 2), "]")) |>
+  kable(align = "llrrrr")
+```
+
+```{r}
+#| label: comparaison-mi
+fr_mi  <- filter(derniere, code == "FR")
+reg_mi <- filter(derniere, code == "52")
+dep_mi <- filter(derniere, niveau == "departement")
+dep_sous_france <- dep_mi$libelle[dep_mi$ic_haut < fr_mi$ic_bas]
+region_sous_france <- reg_mi$ic_haut < fr_mi$ic_bas
+```
+
+À l'échelle d'un département, la mortalité infantile ne concerne chaque année que quelques dizaines de décès. Un taux annuel serait donc très instable : on cumule ici décès et naissances sur trois ans et on accompagne chaque taux d'un intervalle de confiance exact (loi de Poisson).
+
+Sur la période `r reg_mi$periode`, le taux régional est de `r fmt(reg_mi$taux_pour_1000, 2)` ‰, contre `r fmt(fr_mi$taux_pour_1000, 2)` ‰ en France. `r if (region_sous_france) "Les deux intervalles de confiance ne se recouvrent pas : la mortalité infantile est significativement plus faible dans la région qu'au niveau national." else "Les intervalles de confiance se recouvrent : l'écart avec la France n'est pas significatif."` `r if (length(dep_sous_france) > 0) paste0("Au niveau départemental, ", ifelse(length(dep_sous_france) > 1, "seuls les intervalles de ", "seul l'intervalle de "), paste(dep_sous_france, collapse = " et "), ifelse(length(dep_sous_france) > 1, " sont", " est"), " entièrement situé", ifelse(length(dep_sous_france) > 1, "s", ""), " sous le taux national. ") else ""`Entre départements de la région, les intervalles se recouvrent largement : **les écarts observés ne permettent pas de conclure à une différence réelle entre eux**.
+
+# Accès aux soins : les médecins généralistes
+
+```{r}
+#| label: medecins
+annee_med <- 2026   # effectifs au 1er janvier, dernière année publiée par la DREES
+annee_med_debut <- 2012
+
+med     <- requete("07_medecins_departements.sql",
+                   annee = annee_med, annee_debut = annee_med_debut)
+med_dep <- filter(med, niveau == "departement")
+med_pdl <- filter(med_dep, code_region == "52")
+med_reg <- filter(med, code == "52")
+med_fm  <- filter(med, code == "FM")
+
+reg_med   <- requete("08_medecins_regions.sql", annee = annee_med)
+reg_med_0 <- requete("08_medecins_regions.sql", annee = annee_med_debut)
+rang_reg   <- which(reg_med$code_region == "52")
+rang_reg_0 <- which(reg_med_0$code_region == "52")
+
+bas  <- slice_min(med_pdl, densite_mg, n = 2)
+haut <- slice_max(med_pdl, densite_mg, n = 2)
+
+# Noms avec article, pour des phrases correctes quel que soit le département cité
+article <- c("Loire-Atlantique" = "la Loire-Atlantique",
+             "Maine-et-Loire" = "le Maine-et-Loire", "Mayenne" = "la Mayenne",
+             "Sarthe" = "la Sarthe", "Vendée" = "la Vendée")
+avec_art <- function(x) unname(article[x])
+majuscule <- function(x) paste0(toupper(substr(x, 1, 1)), substring(x, 2))
+fourchette <- function(x) {
+  a <- fmt(min(x), 0); b <- fmt(max(x), 0)
+  if (a == b) a else paste(a, "à", b)
+}
+et <- function(x) if (length(x) <= 1) x else
+  paste(paste(head(x, -1), collapse = ", "), "et", tail(x, 1))
+```
+
+Au 1^er^ janvier `r annee_med`, les Pays de la Loire comptent **`r fmtn(med_reg$mg_total)` médecins généralistes**, soit `r fmt(med_reg$densite_mg, 0)` pour 100 000 habitants, contre `r fmt(med_fm$densite_mg, 0)` en France métropolitaine. Depuis `r annee_med_debut`, la densité a progressé de `r fmt(med_reg$evolution_densite_pct)` % dans la région, alors qu'elle a reculé de `r fmt(abs(med_fm$evolution_densite_pct))` % au niveau national : la région est passée du `r rang_reg_0`^e^ au `r rang_reg`^e^ rang des `r nrow(reg_med)` régions métropolitaines.
+
+## La région face aux autres régions
+
+```{r}
+#| label: fig-regions-mg
+#| fig-cap: !expr paste0("Densité de médecins généralistes par région métropolitaine au 1er janvier ", annee_med)
+#| fig-height: 4.8
+reg_med |>
+  mutate(region = reorder(region, densite_mg),
+         pdl = code_region == "52") |>
+  ggplot(aes(densite_mg, region, fill = pdl)) +
+  geom_col(width = 0.7) +
+  geom_vline(xintercept = med_fm$densite_mg, linetype = "dashed",
+             colour = "grey40") +
+  geom_text(aes(label = fmt(densite_mg, 0)), hjust = -0.2, size = 3.1) +
+  scale_fill_manual(values = c(`FALSE` = "grey75", `TRUE` = "#1F3A5F"),
+                    guide = "none") +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.08))) +
+  labs(x = "Médecins généralistes pour 100 000 habitants", y = NULL,
+       caption = paste0("Ligne pointillée : France métropolitaine (",
+                        fmt(med_fm$densite_mg, 0), ").\n", source_drees)) +
+  theme_ors()
+```
+
+La densité régionale est obtenue en additionnant les généralistes et les habitants des départements de chaque région, puis en divisant. Une moyenne des densités départementales donnerait le même poids à la Lozère qu'au Nord.
+
+## Deux profils de départements dans la région
+
+```{r}
+#| label: fig-carte-mg
+#| fig-cap: !expr paste0("Densité de médecins généralistes par département au 1er janvier ", annee_med, ", Pays de la Loire en contour")
+#| fig-height: 6
+geo_mg <- fond_departements() |>
+  left_join(med_dep, by = "code_dep")
+contour_pdl <- st_union(filter(geo_mg, code_dep %in% departements_pdl))
+
+ggplot(geo_mg) +
+  geom_sf(aes(fill = densite_mg), colour = "white", linewidth = 0.1) +
+  geom_sf(data = contour_pdl, fill = NA, colour = "#1F3A5F", linewidth = 0.9) +
+  scale_fill_distiller(palette = "Blues", direction = 1,
+                       name = "Généralistes\npour 100 000 hab.",
+                       limits = c(NA, 220), oob = scales::squish) +
+  labs(caption = paste0("Échelle plafonnée à 220 pour la lisibilité ",
+                        "(Hautes-Alpes et Paris au-delà).\n", source_drees)) +
+  theme_ors() +
+  theme(axis.text = element_blank(), panel.grid = element_blank(),
+        legend.position = "right")
+```
+
+```{r}
+#| label: tbl-mg
+#| tbl-cap: !expr paste0("Médecins généralistes au 1er janvier ", annee_med)
+med |>
+  filter(code_region == "52" | code == "FM") |>
+  transmute(
+    Territoire = libelle,
+    `Généralistes` = fmtn(mg_total),
+    `Densité (/100 000)` = fmt(densite_mg, 0),
+    `dont libéraux` = fmt(densite_mg_liberal, 0),
+    `Rang national` = ifelse(is.na(rang_densite_mg), "",
+                             paste0(rang_densite_mg, "/", nb_departements)),
+    `Évolution depuis 2012 (%)` = fmt(evolution_densite_pct),
+    `60 ans ou plus (%)` = fmt(part_mg_60_plus_pct, 0)
+  ) |>
+  kable(align = "lrrrrrr")
+```
+
+*Lecture : le rang national classe les `r med_pdl$nb_departements[1]` départements de la densité la plus élevée (rang 1) à la plus faible. « dont libéraux » : généralistes à exercice exclusivement libéral.*
+
+La région réunit deux situations très différentes. `r majuscule(et(avec_art(haut$libelle)))` comptent environ `r fmt(mean(haut$densite_mg), 0)` généralistes pour 100 000 habitants, au-dessus de la moyenne nationale`r if (setequal(haut$code_dep, c("44", "49"))) " ; ce sont les deux départements universitaires de la région (facultés de médecine de Nantes et d'Angers)" else ""`. `r majuscule(et(avec_art(bas$libelle)))` en comptent `r fmt(bas$densite_mg[1], 0)` et `r fmt(bas$densite_mg[2], 0)`, aux rangs `r bas$rang_densite_mg[1]` et `r bas$rang_densite_mg[2]` sur `r bas$nb_departements[1]`. Leur densité a reculé de `r fmt(abs(bas$evolution_densite_pct[1]))` et `r fmt(abs(bas$evolution_densite_pct[2]))` % depuis `r annee_med_debut`. Surtout, `r fourchette(bas$part_mg_60_plus_pct)` % de leurs généralistes ont 60 ans ou plus, contre `r fourchette(haut$part_mg_60_plus_pct)` % dans les deux départements les mieux dotés : de nombreux départs en retraite sont à prévoir là où la densité est déjà la plus faible.
+
+```{r}
+#| label: fig-evolution-mg
+#| fig-cap: !expr paste0("Évolution de la densité de médecins généralistes, ", annee_med_debut, "-", annee_med)
+#| fig-height: 4.8
+evol_mg <- requete("09_medecins_evolution.sql", annee_debut = annee_med_debut) |>
+  mutate(libelle = ifelse(code == "FM", "France", libelle))
+
+ggplot(evol_mg, aes(annee, densite_mg, colour = libelle,
+                    linewidth = niveau != "departement")) +
+  geom_line() +
+  scale_colour_manual(values = couleurs_territoires, name = NULL) +
+  scale_linewidth_manual(values = c(`FALSE` = 0.6, `TRUE` = 1.2), guide = "none") +
+  scale_x_continuous(breaks = seq(annee_med_debut, annee_med, 2)) +
+  labs(x = NULL, y = "Généralistes pour 100 000 habitants",
+       caption = paste0("France : France métropolitaine.\n", source_drees)) +
+  theme_ors() +
+  guides(colour = guide_legend(nrow = 2))
+```
+
+## Comparaison avec les départements voisins
+
+```{r}
+#| label: voisins
+# Départements limitrophes de la région, repérés par la géométrie :
+# à moins de 2 km du contour régional (le fond de carte est simplifié,
+# les frontières communes ne se touchent pas toujours exactement)
+geo_l93    <- st_transform(fond_departements(), 2154)
+region_l93 <- st_union(filter(geo_l93, code_dep %in% departements_pdl))
+proches    <- lengths(st_is_within_distance(geo_l93, region_l93, dist = 2000)) > 0
+voisins    <- setdiff(geo_l93$code_dep[proches], departements_pdl)
+```
+
+```{r}
+#| label: fig-voisins-mg
+#| fig-cap: !expr paste0("Densité de médecins généralistes et part des 60 ans ou plus, Pays de la Loire et départements limitrophes, ", annee_med)
+#| fig-height: 5
+comp <- med_dep |>
+  filter(code_dep %in% c(departements_pdl, voisins)) |>
+  mutate(groupe = ifelse(code_region == "52", "Pays de la Loire",
+                         "Départements limitrophes"))
+
+ggplot(comp, aes(densite_mg, part_mg_60_plus_pct, colour = groupe)) +
+  geom_vline(xintercept = med_fm$densite_mg, linetype = "dashed", colour = "grey60") +
+  geom_hline(yintercept = med_fm$part_mg_60_plus_pct, linetype = "dashed",
+             colour = "grey60") +
+  geom_point(size = 3) +
+  ggrepel::geom_text_repel(aes(label = libelle), size = 3, seed = 1,
+                           show.legend = FALSE) +
+  scale_colour_manual(values = c("Pays de la Loire" = "#1F3A5F",
+                                 "Départements limitrophes" = "grey55"),
+                      name = NULL) +
+  labs(x = "Généralistes pour 100 000 habitants",
+       y = "Part des généralistes de 60 ans ou plus (%)",
+       caption = paste0("Lignes pointillées : France métropolitaine.\n", source_drees)) +
+  theme_ors()
+```
+
+```{r}
+#| label: chiffres-voisins
+comp_bas <- filter(comp, densite_mg < med_fm$densite_mg,
+                   part_mg_60_plus_pct > med_fm$part_mg_60_plus_pct)
+```
+
+Les `r length(voisins)` départements limitrophes de la région (`r et(sort(filter(comp, groupe != "Pays de la Loire")$libelle))`) sont repérés automatiquement à partir du fond de carte. Le graphique croise deux fragilités : une densité faible (à gauche de la ligne verticale) et des généralistes âgés (au-dessus de la ligne horizontale). `r nrow(comp_bas)` des `r nrow(comp)` départements comparés cumulent les deux. Dans la région, ce sont `r et(avec_art(intersect(med_pdl$libelle, comp_bas$libelle)))`. Ils partagent cette situation avec plusieurs de leurs voisins (`r et(sort(setdiff(comp_bas$libelle, med_pdl$libelle)))`), plus qu'avec le reste de la région.
+
+::: {.callout-important}
+## Point de méthode
+
+La densité rapporte un nombre de médecins à une population. Elle **ne mesure pas à elle seule l'accès aux soins** : elle ignore le temps de travail des médecins, leur âge, la distance à parcourir et les besoins d'une population âgée, plus consommatrice de soins. Pour approcher l'accessibilité, la DREES publie l'**APL** (accessibilité potentielle localisée), calculée à l'échelle communale. Par ailleurs, les généralistes comptés ici incluent tous les modes d'exercice (libéral, mixte, salarié) et sont rattachés au lieu de leur activité la plus récente.
+:::
+
+# Méthode et reproductibilité
+
+**Données.** Insee, *Données départementales et régionales — État civil et estimations de population* (fichiers DEP1 à DEP5). Les données de la dernière année publiée sont provisoires ; les indicateurs démographiques s'arrêtent donc à `r annee_ref`. DREES, *La démographie des professionnels de santé depuis 2012* (fichier Médecins, répertoire RPPS) : effectifs au 1^er^ janvier, rapportés aux populations Insee au 1^er^ janvier (provisoires pour `r annee_med`). En 2024, l'extraction du RPPS a été réalisée au 30 septembre et l'activité reconstruite au 1^er^ janvier par la DREES.
+
+**Chaîne de traitement.**
+
+1. `R/00_extraire_medecins.R` extrait du fichier DREES (300 000 lignes) les seules lignes utiles dans un petit fichier CSV.
+2. `R/01_import_insee.R` lit les fichiers Excel de l'Insee (un onglet par année depuis 1975), ne garde que les lignes de territoires, recode les départements sur les régions actuelles (les fichiers antérieurs à 2015 utilisent les anciennes régions) et charge le tout dans une base SQLite. Des contrôles arrêtent le script en cas d'incohérence : somme des départements égale au total régional, nombre de départements constant, densités de généralistes identiques à celles publiées par la DREES.
+3. Les indicateurs sont calculés en SQL (dossier `sql/`) : jointures, fonctions de fenêtre pour les rangs nationaux et les cumuls sur 3 ans.
+4. Ce rapport Quarto et l'application Shiny interrogent la même base : une mise à jour des fichiers sources met à jour toutes les restitutions.
+
+**Limites.** Les taux bruts ne sont pas standardisés sur l'âge ; les petits effectifs (mortalité infantile, petits départements) imposent des regroupements pluriannuels et une lecture prudente des écarts ; la densité de médecins n'est qu'une première approche de l'accès aux soins.

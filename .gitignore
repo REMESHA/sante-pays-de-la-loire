@@ -1,0 +1,41 @@
+# .Rproj.user/
+# .Rhistory
+# .RData
+# rapport/rapport_files/
+# app/data/
+# app/data-raw/
+# app/sql/
+# app/fonctions.R
+# rsconnect/
+# Fichier DREES complet (> 50 Mo) : seul l'extrait CSV est versionné
+# data-raw/medecins_rpps_2012_2026.xlsx
+
+
+
+# RStudio et R
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Fichiers produits par run_all.R (reconstruits à la demande)
+data/
+rapport/rapport.html
+rapport/rapport_files/
+app/data/
+app/data-raw/
+app/sql/
+app/fonctions.R
+rsconnect/
+
+# Fichier DREES complet (> 50 Mo) : seul l'extrait CSV est versionné
+data-raw/medecins_rpps_2012_2026.xlsx
+
+# Fichiers personnels
+screen/
+README.html
+PUBLIER.md
+
+# Fichiers système
+.DS_Store
+Thumbs.db
